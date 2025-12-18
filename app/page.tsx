@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface Manhwa {
-  id: string;
+  id: number;
   url: string;
   title: string;
   status: 'pending' | 'downloading' | 'completed' | 'error';
@@ -11,12 +11,89 @@ interface Manhwa {
   addedAt: Date;
   fileName?: string;
   fileSize?: string;
+  content?: string;
+  zip_file?: string | null;
+  zip_file_size_mb?: number;
+  created_at?: string;
+  updated_at?: string;
+  download_status?: string;
 }
 
 export default function Home() {
+  const pollingIntervalsRef = useRef<Map<number, NodeJS.Timeout>>(new Map());
   const [url, setUrl] = useState('');
   const [manhwaList, setManhwaList] = useState<Manhwa[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Cleanup polling intervals on component unmount
+  useEffect(() => {
+    return () => {
+      pollingIntervalsRef.current.forEach(interval => clearInterval(interval));
+      pollingIntervalsRef.current.clear();
+    };
+  }, []);
+
+  const pollManhwaStatus = async (id: number) => {
+    try {
+      const response = await fetch(`http://localhost:8011/api/v1/kokorean/manhwa/${id}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch manhwa status');
+      }
+
+      const result = await response.json();
+      const data = result.data;
+
+      // Update manhwa in the list
+      setManhwaList(prev => 
+        prev.map(m => {
+          if (m.id === id) {
+            return {
+              ...m,
+              title: data.title,
+              content: data.content,
+              zip_file: data.zip_file,
+              zip_file_size_mb: data.zip_file_size_mb,
+              updated_at: data.updated_at,
+              download_status: data.download_status,
+            };
+          }
+          return m;
+        })
+      );
+
+      // If zip_file is available, stop polling and mark as completed
+      if (data.zip_file) {
+        const interval = pollingIntervalsRef.current.get(id);
+        if (interval) {
+          clearInterval(interval);
+          pollingIntervalsRef.current.delete(id);
+        }
+
+        // Update status to completed
+        setManhwaList(prev =>
+          prev.map(m => {
+            if (m.id === id) {
+              return {
+                ...m,
+                status: 'completed' as const,
+                progress: 100,
+              };
+            }
+            return m;
+          })
+        );
+      }
+    } catch (error) {
+      console.error('Error polling manhwa status:', error);
+      // Stop polling on error
+      const interval = pollingIntervalsRef.current.get(id);
+      if (interval) {
+        clearInterval(interval);
+        pollingIntervalsRef.current.delete(id);
+      }
+    }
+  };
 
   const extractTitleFromUrl = (url: string): string => {
     try {
@@ -47,6 +124,16 @@ export default function Home() {
     return `${sizeMB} MB`;
   };
 
+  const getImageCount = (content?: string): number => {
+    if (!content) return 0;
+    try {
+      const images = JSON.parse(content);
+      return Array.isArray(images) ? images.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -54,25 +141,81 @@ export default function Home() {
 
     setIsSubmitting(true);
 
-    const newManhwa: Manhwa = {
-      id: Date.now().toString(),
-      url: url.trim(),
-      title: extractTitleFromUrl(url.trim()),
-      status: 'pending',
-      progress: 0,
-      addedAt: new Date(),
-    };
+    try {
+      // Call the API to download manhwa
+      const response = await fetch('http://localhost:8011/api/v1/kokorean/manhwa/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: url.trim(),
+          title: '',
+          download_status: 'pending',
+          content: ''
+        }),
+      });
 
-    setManhwaList(prev => [newManhwa, ...prev]);
-    setUrl('');
+      if (!response.ok) {
+        throw new Error('Failed to download manhwa');
+      }
 
-    // Simulate download process
-    simulateDownload(newManhwa.id);
+      const result = await response.json();
+      
+      // Create manhwa object from API response
+      const newManhwa: Manhwa = {
+        id: result.data.id,
+        url: result.data.url,
+        title: result.data.title,
+        status: 'pending',
+        progress: 0,
+        addedAt: new Date(result.data.created_at),
+        content: result.data.content,
+        zip_file: result.data.zip_file,
+        zip_file_size_mb: result.data.zip_file_size_mb,
+        created_at: result.data.created_at,
+        updated_at: result.data.updated_at,
+        download_status: result.data.download_status,
+      };
 
-    setTimeout(() => setIsSubmitting(false), 300);
+      setManhwaList(prev => [newManhwa, ...prev]);
+      setUrl('');
+
+      // Start polling if zip_file is not yet available
+      if (!result.data.zip_file) {
+        // Start progress simulation
+        simulateDownload(newManhwa.id);
+        
+        // Start polling every 5 seconds
+        const interval = setInterval(() => {
+          pollManhwaStatus(newManhwa.id);
+        }, 5000);
+        
+        pollingIntervalsRef.current.set(newManhwa.id, interval);
+      } else {
+        // If zip_file is already available, mark as completed
+        setManhwaList(prev =>
+          prev.map(m => {
+            if (m.id === newManhwa.id) {
+              return {
+                ...m,
+                status: 'completed' as const,
+                progress: 100,
+              };
+            }
+            return m;
+          })
+        );
+      }
+    } catch (error) {
+      console.error('Error downloading manhwa:', error);
+      alert('Failed to download manhwa. Please check the URL and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const simulateDownload = (id: string) => {
+  const simulateDownload = (id: number) => {
     // Update status to downloading
     setManhwaList(prev =>
       prev.map(m => m.id === id ? { ...m, status: 'downloading' as const } : m)
@@ -151,7 +294,7 @@ export default function Home() {
                 type="url"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com/manhwa/title"
+                placeholder="https://뉴토끼대피소.com/chapter/1123586"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent transition-all"
                 required
               />
@@ -215,11 +358,16 @@ export default function Home() {
 
                   {manhwa.status === 'completed' && (
                     <div className="mt-4 space-y-3">
-                      <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                        <span className="font-medium">Download completed successfully</span>
+                      <div className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span className="font-medium">Download completed successfully</span>
+                        </div>
+                        <span className="text-slate-600 dark:text-slate-400 font-medium">
+                          {getImageCount(manhwa.content)} images
+                        </span>
                       </div>
 
                       {/* File Information and Download Button */}
@@ -232,28 +380,49 @@ export default function Home() {
                           </div>
                           <div>
                             <p className="font-medium text-slate-900 dark:text-slate-100 text-sm">
-                              {manhwa.fileName}
+                              {manhwa.zip_file ? manhwa.zip_file.split('/').pop() : 'Processing...'}
                             </p>
                             <p className="text-xs text-slate-500 dark:text-slate-400">
-                              {manhwa.fileSize}
+                              {manhwa.zip_file && manhwa.zip_file_size_mb 
+                                ? `${manhwa.zip_file_size_mb.toFixed(2)} MB`
+                                : '0 MB'
+                              }
                             </p>
                           </div>
                         </div>
 
                         <button
                           onClick={() => {
-                            // Simulate file download
-                            const link = document.createElement('a');
-                            link.href = '#';
-                            link.download = manhwa.fileName || 'manhwa.zip';
-                            alert(`Downloading: ${manhwa.fileName}\nSize: ${manhwa.fileSize}`);
+                            if (manhwa.zip_file) {
+                              // Download the actual zip file
+                              const link = document.createElement('a');
+                              link.href = manhwa.zip_file;
+                              link.download = manhwa.zip_file.split('/').pop() || 'manhwa.zip';
+                              link.target = '_blank';
+                              document.body.appendChild(link);
+                              link.click();
+                              document.body.removeChild(link);
+                            }
                           }}
-                          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg"
+                          disabled={!manhwa.zip_file}
+                          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-500 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                          </svg>
-                          Download File
+                          {!manhwa.zip_file ? (
+                            <>
+                              <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Preparing...
+                            </>
+                          ) : (
+                            <>
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                              </svg>
+                              Download File
+                            </>
+                          )}
                         </button>
                       </div>
                     </div>
