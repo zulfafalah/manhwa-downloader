@@ -35,7 +35,7 @@ export default function Home() {
 
   const pollManhwaStatus = async (id: number) => {
     try {
-      const response = await fetch(`http://localhost:8011/api/v1/kokorean/manhwa/${id}`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/kokorean/manhwa/${id}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch manhwa status');
@@ -143,7 +143,7 @@ export default function Home() {
 
     try {
       // Call the API to download manhwa
-      const response = await fetch('http://localhost:8011/api/v1/kokorean/manhwa/', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/kokorean/manhwa/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
