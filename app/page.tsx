@@ -25,6 +25,31 @@ export default function Home() {
   const [manhwaList, setManhwaList] = useState<Manhwa[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Load manhwa list from localStorage on component mount
+  useEffect(() => {
+    const savedManhwaList = localStorage.getItem('manhwaDownloadHistory');
+    if (savedManhwaList) {
+      try {
+        const parsed = JSON.parse(savedManhwaList);
+        // Convert date strings back to Date objects
+        const manhwaListWithDates = parsed.map((m: Manhwa) => ({
+          ...m,
+          addedAt: new Date(m.addedAt),
+        }));
+        setManhwaList(manhwaListWithDates);
+      } catch (error) {
+        console.error('Error loading manhwa history from localStorage:', error);
+      }
+    }
+  }, []);
+
+  // Save manhwa list to localStorage whenever it changes
+  useEffect(() => {
+    if (manhwaList.length > 0) {
+      localStorage.setItem('manhwaDownloadHistory', JSON.stringify(manhwaList));
+    }
+  }, [manhwaList]);
+
   // Cleanup polling intervals on component unmount
   useEffect(() => {
     return () => {
@@ -131,6 +156,16 @@ export default function Home() {
       return Array.isArray(images) ? images.length : 0;
     } catch {
       return 0;
+    }
+  };
+
+  const clearHistory = () => {
+    if (confirm('Are you sure you want to clear all download history?')) {
+      setManhwaList([]);
+      localStorage.removeItem('manhwaDownloadHistory');
+      // Clear all active polling intervals
+      pollingIntervalsRef.current.forEach(interval => clearInterval(interval));
+      pollingIntervalsRef.current.clear();
     }
   };
 
@@ -316,9 +351,20 @@ export default function Home() {
         {/* Download List */}
         {manhwaList.length > 0 && (
           <div className="space-y-4">
-            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-200 mb-4">
-              Download Queue ({manhwaList.length})
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-200">
+                Download Queue ({manhwaList.length})
+              </h2>
+              <button
+                onClick={clearHistory}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                Clear History
+              </button>
+            </div>
 
             <div className="space-y-3">
               {manhwaList.map((manhwa) => (
