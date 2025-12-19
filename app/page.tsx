@@ -6,7 +6,7 @@ interface Manhwa {
   id: number;
   url: string;
   title: string;
-  status: 'pending' | 'downloading' | 'completed' | 'error';
+  status: 'pending' | 'downloading' | 'completed' | 'error' | 'timeout';
   progress: number;
   addedAt: Date;
   fileName?: string;
@@ -17,13 +17,17 @@ interface Manhwa {
   created_at?: string;
   updated_at?: string;
   download_status?: string;
+  timedOut?: boolean;
+  isChecking?: boolean;
 }
 
 export default function Home() {
   const pollingIntervalsRef = useRef<Map<number, NodeJS.Timeout>>(new Map());
+  const pollingTimeoutsRef = useRef<Map<number, NodeJS.Timeout>>(new Map());
   const [url, setUrl] = useState('');
   const [manhwaList, setManhwaList] = useState<Manhwa[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Load manhwa list from localStorage on component mount
   useEffect(() => {
@@ -41,27 +45,30 @@ export default function Home() {
         console.error('Error loading manhwa history from localStorage:', error);
       }
     }
+    setIsInitialized(true);
   }, []);
 
-  // Save manhwa list to localStorage whenever it changes
+  // Save manhwa list to localStorage whenever it changes (after initialization)
   useEffect(() => {
-    if (manhwaList.length > 0) {
+    if (isInitialized) {
       localStorage.setItem('manhwaDownloadHistory', JSON.stringify(manhwaList));
     }
-  }, [manhwaList]);
+  }, [manhwaList, isInitialized]);
 
   // Cleanup polling intervals on component unmount
   useEffect(() => {
     return () => {
       pollingIntervalsRef.current.forEach(interval => clearInterval(interval));
       pollingIntervalsRef.current.clear();
+      pollingTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+      pollingTimeoutsRef.current.clear();
     };
   }, []);
 
   const pollManhwaStatus = async (id: number) => {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/kokorean/manhwa/${id}`);
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch manhwa status');
       }
@@ -70,9 +77,11 @@ export default function Home() {
       const data = result.data;
 
       // Update manhwa in the list
-      setManhwaList(prev => 
+      setManhwaList(prev =>
         prev.map(m => {
           if (m.id === id) {
+            // Don't update if already timed out
+            if (m.timedOut) return m;
             return {
               ...m,
               title: data.title,
@@ -94,6 +103,11 @@ export default function Home() {
           clearInterval(interval);
           pollingIntervalsRef.current.delete(id);
         }
+        const timeout = pollingTimeoutsRef.current.get(id);
+        if (timeout) {
+          clearTimeout(timeout);
+          pollingTimeoutsRef.current.delete(id);
+        }
 
         // Update status to completed
         setManhwaList(prev =>
@@ -103,6 +117,7 @@ export default function Home() {
                 ...m,
                 status: 'completed' as const,
                 progress: 100,
+                timedOut: false,
               };
             }
             return m;
@@ -119,6 +134,174 @@ export default function Home() {
       }
     }
   };
+
+  const startPolling = (id: number) => {
+    // Start polling every 5 seconds
+    const interval = setInterval(() => {
+      pollManhwaStatus(id);
+    }, 5000);
+
+    pollingIntervalsRef.current.set(id, interval);
+
+    // Set timeout for 30 seconds
+    const timeout = setTimeout(() => {
+      // Stop polling after 30 seconds
+      const interval = pollingIntervalsRef.current.get(id);
+      if (interval) {
+        clearInterval(interval);
+        pollingIntervalsRef.current.delete(id);
+      }
+
+      // Mark as timed out
+      setManhwaList(prev =>
+        prev.map(m => {
+          if (m.id === id && !m.zip_file) {
+            return {
+              ...m,
+              status: 'timeout' as const,
+              timedOut: true,
+            };
+          }
+          return m;
+        })
+      );
+    }, 30000); // 30 seconds
+
+    pollingTimeoutsRef.current.set(id, timeout);
+  };
+
+  const checkAndRestorePolling = async (id: number) => {
+    try {
+      console.log(`[Recovery] Checking status for manhwa ID: ${id}`);
+
+      // Check current status from API
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/kokorean/manhwa/${id}`);
+
+      if (!response.ok) {
+        console.error('Failed to fetch manhwa status for id:', id);
+        return;
+      }
+
+      const result = await response.json();
+      const data = result.data;
+
+      console.log(`[Recovery] API response for ID ${id}:`, {
+        has_zip: !!data.zip_file,
+        zip_file: data.zip_file,
+        title: data.title,
+        download_status: data.download_status
+      });
+
+      // Update manhwa with latest data from API
+      setManhwaList(prev =>
+        prev.map(m => {
+          if (m.id === id) {
+            const updated = {
+              ...m,
+              title: data.title,
+              content: data.content,
+              zip_file: data.zip_file,
+              zip_file_size_mb: data.zip_file_size_mb,
+              updated_at: data.updated_at,
+              download_status: data.download_status,
+              status: data.zip_file ? 'completed' as const : 'downloading' as const,
+              progress: data.zip_file ? 100 : Math.max(90, m.progress), // Keep at 90% minimum while waiting
+              timedOut: false, // Reset timeout flag when checking API
+            };
+            console.log(`[Recovery] Updated manhwa ID ${id}:`, {
+              old_status: m.status,
+              new_status: updated.status,
+              has_zip: !!updated.zip_file,
+              progress: updated.progress
+            });
+            return updated;
+          }
+          return m;
+        })
+      );
+
+      // If zip_file is not yet available, restart polling
+      if (!data.zip_file) {
+        console.log(`[Recovery] Starting polling for ID ${id} (zip not ready)`);
+        // Start polling with timeout
+        startPolling(id);
+      } else {
+        console.log(`[Recovery] Zip file ready for ID ${id}, no polling needed`);
+      }
+    } catch (error) {
+      console.error('Error checking manhwa status:', error);
+    }
+  };
+
+  const handleManualRetry = async (id: number) => {
+    try {
+      // Set checking state and progress to 90%
+      setManhwaList(prev =>
+        prev.map(m => {
+          if (m.id === id) {
+            return {
+              ...m,
+              isChecking: true,
+              status: 'downloading' as const,
+              progress: 90, // Set to 90% while checking
+              timedOut: false,
+            };
+          }
+          return m;
+        })
+      );
+
+      // Check and restore polling (which will poll immediately)
+      await checkAndRestorePolling(id);
+
+      // Remove checking state after a short delay to show the result
+      setTimeout(() => {
+        setManhwaList(prev =>
+          prev.map(m => {
+            if (m.id === id) {
+              return {
+                ...m,
+                isChecking: false,
+              };
+            }
+            return m;
+          })
+        );
+      }, 500);
+    } catch (error) {
+      console.error('Error retrying download:', error);
+      // Remove checking state on error
+      setManhwaList(prev =>
+        prev.map(m => {
+          if (m.id === id) {
+            return {
+              ...m,
+              isChecking: false,
+            };
+          }
+          return m;
+        })
+      );
+    }
+  };
+
+  // Restore polling for incomplete items after initialization
+  useEffect(() => {
+    if (isInitialized && manhwaList.length > 0) {
+      console.log('[Recovery] Starting restoration check for', manhwaList.length, 'items');
+
+      manhwaList.forEach(async (manhwa) => {
+        // Check items that don't have zip_file yet
+        // This includes: pending, downloading, timeout states, AND completed items without zip_file
+        if (!manhwa.zip_file) {
+          console.log(`[Recovery] Item needs check - ID: ${manhwa.id}, Status: ${manhwa.status}, Title: ${manhwa.title}`);
+          await checkAndRestorePolling(manhwa.id);
+        } else {
+          console.log(`[Recovery] Item already has zip - ID: ${manhwa.id}, Status: ${manhwa.status}`);
+        }
+      });
+    }
+  }, [isInitialized]);
 
   const extractTitleFromUrl = (url: string): string => {
     try {
@@ -163,9 +346,11 @@ export default function Home() {
     if (confirm('Are you sure you want to clear all download history?')) {
       setManhwaList([]);
       localStorage.removeItem('manhwaDownloadHistory');
-      // Clear all active polling intervals
+      // Clear all active polling intervals and timeouts
       pollingIntervalsRef.current.forEach(interval => clearInterval(interval));
       pollingIntervalsRef.current.clear();
+      pollingTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+      pollingTimeoutsRef.current.clear();
     }
   };
 
@@ -196,7 +381,7 @@ export default function Home() {
       }
 
       const result = await response.json();
-      
+
       // Create manhwa object from API response
       const newManhwa: Manhwa = {
         id: result.data.id,
@@ -220,13 +405,9 @@ export default function Home() {
       if (!result.data.zip_file) {
         // Start progress simulation
         simulateDownload(newManhwa.id);
-        
-        // Start polling every 5 seconds
-        const interval = setInterval(() => {
-          pollManhwaStatus(newManhwa.id);
-        }, 5000);
-        
-        pollingIntervalsRef.current.set(newManhwa.id, interval);
+
+        // Start polling with timeout
+        startPolling(newManhwa.id);
       } else {
         // If zip_file is already available, mark as completed
         setManhwaList(prev =>
@@ -292,6 +473,7 @@ export default function Home() {
       case 'downloading': return 'text-blue-600 dark:text-blue-400';
       case 'completed': return 'text-green-600 dark:text-green-400';
       case 'error': return 'text-red-600 dark:text-red-400';
+      case 'timeout': return 'text-orange-600 dark:text-orange-400';
     }
   };
 
@@ -301,6 +483,7 @@ export default function Home() {
       case 'downloading': return 'Downloading';
       case 'completed': return 'Completed';
       case 'error': return 'Error';
+      case 'timeout': return 'Processing';
     }
   };
 
@@ -395,10 +578,55 @@ export default function Home() {
                       </div>
                       <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
                         <div
-                          className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full transition-all duration-300 ease-out"
+                          className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full transition-all duration-300 ease-out relative overflow-hidden"
                           style={{ width: `${manhwa.progress}%` }}
-                        />
+                        >
+                          {/* Animated shimmer effect */}
+                          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer" />
+                        </div>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Timeout State with Manual Retry */}
+                  {manhwa.status === 'timeout' && (
+                    <div className="mt-4 space-y-3">
+                      <div className="flex items-start gap-3 p-4 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-orange-900 dark:text-orange-200 mb-1">
+                            File masih dalam proses
+                          </p>
+                          <p className="text-xs text-orange-700 dark:text-orange-300">
+                            File ini berukuran besar dan masih membutuhkan waktu untuk diproses. Klik tombol di bawah secara berkala untuk memeriksa status download.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleManualRetry(manhwa.id)}
+                        disabled={manhwa.isChecking}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700 disabled:from-slate-400 disabled:to-slate-500 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {manhwa.isChecking ? (
+                          <>
+                            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Memeriksa...
+                          </>
+                        ) : (
+                          <>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                            </svg>
+                            Cek Status Download
+                          </>
+                        )}
+                      </button>
                     </div>
                   )}
 
@@ -429,7 +657,7 @@ export default function Home() {
                               {manhwa.zip_file ? manhwa.zip_file.split('/').pop() : 'Processing...'}
                             </p>
                             <p className="text-xs text-slate-500 dark:text-slate-400">
-                              {manhwa.zip_file && manhwa.zip_file_size_mb 
+                              {manhwa.zip_file && manhwa.zip_file_size_mb
                                 ? `${manhwa.zip_file_size_mb.toFixed(2)} MB`
                                 : '0 MB'
                               }
