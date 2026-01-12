@@ -505,14 +505,25 @@ export default function Home() {
               <span className="text-sm text-slate-600 dark:text-slate-400">
                 Supported:
               </span>
-              <a
-                href="https://뉴토끼대피소.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
-              >
-                뉴토끼대피소.com
-              </a>
+              <div className="flex items-center gap-2">
+                <a
+                  href="https://뉴토끼대피소.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                >
+                  뉴토끼대피소.com
+                </a>
+                <span className="text-slate-300 dark:text-slate-600">•</span>
+                <a
+                  href="https://xbato.com/v3x"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                >
+                  xbato.com
+                </a>
+              </div>
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
                 <span className="text-xs font-medium text-green-600 dark:text-green-400">Active</span>
