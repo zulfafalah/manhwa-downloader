@@ -495,9 +495,30 @@ export default function Home() {
           <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent mb-4">
             Manhwa Downloader
           </h1>
-          <p className="text-slate-600 dark:text-slate-400 text-lg">
+          <p className="text-slate-600 dark:text-slate-400 text-lg mb-6">
             Download your favorite manhwa easily
           </p>
+
+          {/* Supported Website Badge */}
+          <div className="flex justify-center">
+            <div className="inline-flex items-center gap-3 px-6 py-3 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-full shadow-md border border-slate-200/50 dark:border-slate-700/50">
+              <span className="text-sm text-slate-600 dark:text-slate-400">
+                Supported:
+              </span>
+              <a
+                href="https://뉴토끼대피소.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+              >
+                뉴토끼대피소.com
+              </a>
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                <span className="text-xs font-medium text-green-600 dark:text-green-400">Active</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Form Card */}
